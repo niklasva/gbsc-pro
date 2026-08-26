@@ -24,7 +24,7 @@
 #include "../tv5725.h"
 #include "../osd.h"
 #include "../OLEDMenuImplementation.h"
-#include "../ntsc_720x480.h"
+#include "../ntsc_1920x1080.h"
 #include "../src/WebSocketsServer.h"
 
 #include <IRremoteESP8266.h>
@@ -130,7 +130,7 @@ void enterNoSignalOutput(void)
 	rto->inputIsYpBpR = false;
 	rto->syncTypeCsync = false;
 	rto->presetIsPalForce60 = false;
-    writeProgramArrayNew(ntsc_720x480, false);
+    writeProgramArrayNew(ntsc_1920x1080, false);
     doPostNoSignalPresetLoadSteps();
     GBS::VDS_DIS_HB_ST::write(0x00);
     GBS::VDS_DIS_HB_SP::write(0xffff);
