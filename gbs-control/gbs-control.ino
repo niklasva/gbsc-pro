@@ -800,6 +800,10 @@ void setResetParameters()
     SerialM.println("<reset>");
     rto->videoStandardInput = 0;
     rto->videoIsFrozen = false;
+    if (noSignalOutputActive) {
+        OSD_displayOff();
+    }
+    noSignalOutputActive = false;
     rto->applyPresetDoneStage = 0;
     rto->presetVlineShift = 0;
     rto->sourceDisconnected = true;
@@ -1744,17 +1748,17 @@ uint8_t inputAndSyncDetect()
 
     if (syncFound == 0) {
         if (!getSyncPresent()) {
-            if (rto->isInLowPowerMode == false) {
+            if (!noSignalOutputActive && !rto->isInLowPowerMode) {
                 rto->sourceDisconnected = true;
                 rto->videoStandardInput = 0;
-                // reset to base settings, then go to low power
                 GBS::SP_SOG_MODE::write(1);
                 goLowPowerWithInputDetection();
-                rto->isInLowPowerMode = true;
+                enterNoSignalOutput();
             }
         }
         return 0;
     } else if (syncFound == 1 && isInfoDisplayActive == 0) { // input is RGBS
+        leaveNoSignalOutput();
         rto->inputIsYpBpR = 0;
         rto->sourceDisconnected = false;
         rto->isInLowPowerMode = false;
@@ -1763,6 +1767,7 @@ uint8_t inputAndSyncDetect()
         LEDON;
         return 1;
     } else if (syncFound == 2 && isInfoDisplayActive == 0) {
+        leaveNoSignalOutput();
         rto->inputIsYpBpR = 1;
         rto->sourceDisconnected = false;
         rto->isInLowPowerMode = false;
@@ -1771,7 +1776,8 @@ uint8_t inputAndSyncDetect()
         LEDON;
         return 2;
     } else if (syncFound == 3 && isInfoDisplayActive == 0) { // input is RGBHV
-        //already applied
+        // already applied
+        leaveNoSignalOutput();
         rto->isInLowPowerMode = false;
         rto->inputIsYpBpR = 0;
         rto->sourceDisconnected = false;
@@ -3523,7 +3529,10 @@ void doPostPresetLoadSteps()
     rto->scanlinesEnabled = false;
     rto->failRetryAttempts = 0;
     rto->videoIsFrozen = true;       // ensures unfreeze
-    rto->sourceDisconnected = false; // this must be true if we reached here (no syncwatcher operation)
+	// Keep polling for a real input while the synthetic no-signal output is active.
+	if (!noSignalOutputActive) {
+		rto->sourceDisconnected = false;
+	}
     rto->boardHasPower = true;       //same
 
     if (rto->presetID == 0x06 || rto->presetID == 0x16) {
@@ -7504,10 +7513,10 @@ void runSyncWatcher()
     if (rto->noSyncCounter >= 0x07fe) {
         // couldn't recover, source is lost
         // restore initial conditions and move to input detect
-        GBS::DAC_RGBS_PWDNZ::write(0); // 0 = disable DAC
         rto->noSyncCounter = 0;
         SerialM.println();
-        goLowPowerWithInputDetection(); // does not further nest, so it can be called here // sets reset parameters
+        goLowPowerWithInputDetection();
+        enterNoSignalOutput();
     }
 }
 
@@ -8603,9 +8612,10 @@ void loop()
     static unsigned long lastTimeSyncWatcher = millis();
     static unsigned long lastTimeSourceCheck = 500; // 500 to start right away (after setup it will be 2790ms when we get here)
     static unsigned long lastTimeInterruptClear = millis();
-    
+
     IR_handleMenuSelection();
     IR_handleInput();
+    updateNoSignalOutput();
     refreshMenusOnSignalChange();
 
 #if HAVE_BUTTONS
@@ -9821,6 +9831,7 @@ void loop()
                 rto->boardHasPower = true;
                 delay(100);
                 goLowPowerWithInputDetection();
+                enterNoSignalOutput();
             }
         }
     }

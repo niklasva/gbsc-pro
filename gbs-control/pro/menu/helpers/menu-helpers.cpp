@@ -13,6 +13,7 @@
 #include "../menu-core.h"
 #include "../../../OLEDMenuManager.h"
 #include "../../../OLEDMenuImplementation.h"
+#include "../../gbs-control-pro.h"
 
 #include <SSD1306Wire.h>
 
@@ -68,26 +69,31 @@ void showMenuValue(const char* title, const char* label, const char* value) {
     display.display();
 }
 
-void exitMenu() {
+void exitMenu()
+{
     oled_menuItem = OLED_None;
-    OSD_displayOff();   // Turn off OSD before clearing (avoids glitch)
+    OSD_displayOff(); // Turn off OSD before clearing (avoids glitch)
     OSD_clearAll();
     OSD_init();
+    showNoSignalOutput();
 }
 
 // ====================================================================================
 // IR Receiver Helpers
 // ====================================================================================
 
-bool irDecode() {
+bool irDecode()
+{
     if (irrecv.decode(&results)) {
+        wakeNoSignalOutput();
         irDecodedFlag = 1;
         return true;
     }
     return false;
 }
 
-void irResume() {
+void irResume()
+{
     irrecv.resume();
 }
 

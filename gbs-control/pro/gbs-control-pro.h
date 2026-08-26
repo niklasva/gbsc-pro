@@ -135,6 +135,13 @@ extern uint8_t menuLineColors[OSD_MAX_MENU_ROWS];  // Index 0-2 = rows 1-3
 extern uint8_t isInfoDisplayActive;
 extern uint16_t horizontalBlankStart;
 extern uint16_t horizontalBlankStop;
+extern bool noSignalOutputActive;
+
+void enterNoSignalOutput(void);
+void leaveNoSignalOutput(void);
+void showNoSignalOutput(void);
+void updateNoSignalOutput(void);
+void wakeNoSignalOutput(void);
 
 // ====================================================================================
 // External Variables - Video Mode Flags
@@ -241,4 +248,3 @@ void refreshMenusOnSignalChange(void);
 
 bool isPeakingLocked(void);
 void broadcastProStatus(WebSocketsServer& ws);
-

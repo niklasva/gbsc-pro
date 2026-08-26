@@ -55,6 +55,9 @@ extern void setOutModeHdBypass(bool);
 extern void saveUserPrefs();
 extern void resetSyncProcessor();
 extern float getOutputFrameRate();
+extern void writeProgramArrayNew(const uint8_t *programArray, boolean skipMDSection);
+extern void doPostPresetLoadSteps();
+extern void goLowPowerWithInputDetection();
 
 // ====================================================================================
 // Global Variables - IR Remote
@@ -94,6 +97,68 @@ uint8_t menuLineColors[OSD_MAX_MENU_ROWS] = {OSD_TEXT_NORMAL, OSD_TEXT_NORMAL, O
 uint8_t isInfoDisplayActive = 0;
 uint16_t horizontalBlankStart = 0;
 uint16_t horizontalBlankStop = 0;
+bool noSignalOutputActive = false;
+static const unsigned long kNoSignalSleepTimeoutMs = 10UL * 60UL * 1000UL;
+static unsigned long lastNoSignalActivityTime = 0;
+
+void showNoSignalOutput(void)
+{
+    if (!noSignalOutputActive || oled_menuItem != OLED_None) {
+        return;
+    }
+
+    const uint8_t panelColor = OSD_COLOR(OSD_FG_WHITE, OSD_BG_BLUE);
+    const char panelRow[] = "                            ";
+    OSD_writeStringAtRow(1, 0, panelRow, panelColor);
+    OSD_writeStringAtRow(2, 0, panelRow, panelColor);
+    OSD_writeStringAtRow(3, 0, panelRow, panelColor);
+    OSD_writeStringAtRow(1, 10, "GBSC-PRO", panelColor);
+    OSD_writeStringAtRow(2, 9, "NO SIGNAL", panelColor);
+    OSD_writeStringAtRow(3, 9, "PRESS MENU", panelColor);
+    OSD_displayOn();
+}
+
+void enterNoSignalOutput(void)
+{
+    lastNoSignalActivityTime = millis();
+    if (noSignalOutputActive) {
+        return;
+    }
+
+    noSignalOutputActive = true;
+    writeProgramArrayNew(ntsc_720x480, false);
+    doPostPresetLoadSteps();
+    GBS::VDS_DIS_HB_ST::write(0x00);
+    GBS::VDS_DIS_HB_SP::write(0xffff);
+    rto->isInLowPowerMode = false;
+    showNoSignalOutput();
+}
+
+void leaveNoSignalOutput(void)
+{
+    if (!noSignalOutputActive) {
+        return;
+    }
+
+    noSignalOutputActive = false;
+    if (oled_menuItem == OLED_None) {
+        OSD_displayOff();
+    }
+}
+
+void updateNoSignalOutput(void)
+{
+    if (noSignalOutputActive && rto->boardHasPower && millis() - lastNoSignalActivityTime >= kNoSignalSleepTimeoutMs) {
+        goLowPowerWithInputDetection();
+    }
+}
+
+void wakeNoSignalOutput(void)
+{
+    if (rto->sourceDisconnected && rto->boardHasPower) {
+        enterNoSignalOutput();
+    }
+}
 
 // ====================================================================================
 // Global Variables - Video Mode Flags (runtime only, not persisted)

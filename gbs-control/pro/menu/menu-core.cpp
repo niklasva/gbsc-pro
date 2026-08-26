@@ -14,9 +14,9 @@
 
 #include "menu-core.h"
 #include "../../tv5725.h"
-#include "../../ntsc_720x480.h"
 #include "../../OLEDMenuManager.h"
 #include "../../OLEDMenuImplementation.h"
+#include "../gbs-control-pro.h"
 
 #include <SSD1306Wire.h>
 
@@ -33,10 +33,6 @@ extern struct runTimeOptions *rto;
 extern struct userOptions *uopt;
 extern char userCommand;
 extern void saveUserPrefs();
-
-extern void writeProgramArrayNew(const uint8_t *programArray, boolean skipMDSection);
-extern void doPostPresetLoadSteps();
-extern void freezeVideo();
 
 extern OLEDMenuManager oledMenu;
 
@@ -162,6 +158,7 @@ static void IR_handleMenuTimeout(void)
             OSD_clearRowColors(ROW_3);
         }
         OSD_init();
+        showNoSignalOutput();
     }
 
     lastOledMenuItem = oled_menuItem;
@@ -247,44 +244,18 @@ static void IR_handleMuteToggle(void)
     oled_menuItem = OLED_Mute_Display;
 }
 
-// Handle Menu key press - opens main menu or info display
+// Handle Menu key press - opens main input menu
 static void IR_handleMenuKeyPress(void)
 {
     lastMenuItemTime = millis();
     NEW_OLED_MENU = false;
 
-    // Check if source is disconnected or board has no power
-    bool noSignal = rto->sourceDisconnected ||
-                    !rto->boardHasPower ||
-                    GBS::PAD_CKIN_ENZ::read();
-
-    if (noSignal) {
-        // Show info display when no signal
-        OSD_fillRowBackground(ROW_1, 28, OSD_BACKGROUND);
-        OSD_fillRowBackground(ROW_2, 28, OSD_BACKGROUND);
-        oled_menuItem = OLED_Info_Display;
-
-        // Save horizontal blank values before modifying
-        isInfoDisplayActive = 1;
-        horizontalBlankStart = GBS::VDS_DIS_HB_ST::read();
-        horizontalBlankStop = GBS::VDS_DIS_HB_SP::read();
-
-        // Initialize display for info
-        writeProgramArrayNew(ntsc_720x480, false);
-        doPostPresetLoadSteps();
-        GBS::VDS_DIS_HB_ST::write(0x00);
-        GBS::VDS_DIS_HB_SP::write(0xffff);
-        freezeVideo();
-        GBS::SP_CLAMP_MANUAL::write(1);
-    } else {
-        // Open main input menu
-        selectedMenuLine = 1;
-        OSD_handleCommand(OSD_CMD_INIT);
-        OSD_handleCommand(OSD_CMD_PAGE_CHANGE_ROW1);
-        OSD_handleCommand(OSD_CMD_MAIN_PAGE1);
-        oled_menuItem = OLED_Input;
-        display.clear();
-    }
+    selectedMenuLine = 1;
+    OSD_handleCommand(OSD_CMD_INIT);
+    OSD_handleCommand(OSD_CMD_PAGE_CHANGE_ROW1);
+    OSD_handleCommand(OSD_CMD_MAIN_PAGE1);
+    oled_menuItem = OLED_Input;
+    display.clear();
 }
 
 // Handle Save key press - opens profile menu
