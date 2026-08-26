@@ -1628,9 +1628,10 @@ uint8_t detectAndSwitchToActiveInput()
                             delay(30);
                         }
 
-                        rto->videoStandardInput = 15;
-                        // exception: apply preset here, not later in syncwatcher
-                        applyPresets(rto->videoStandardInput);
+						rto->videoStandardInput = 15;
+						rto->sourceDisconnected = false;
+						// exception: apply preset here, not later in syncwatcher
+						applyPresets(rto->videoStandardInput);
                         delay(100);
 
                         return 3;
@@ -3391,12 +3392,12 @@ void applyDevOverrides()
     }
 }
 
-void doPostPresetLoadSteps()
+void doPostPresetLoadStepsInternal(bool noSignalMode)
 {
     //unsigned long postLoadTimer = millis();
 
     // adco->r_gain gets applied if uopt->enableAutoGain is set.
-    if (uopt->enableAutoGain) {
+    if (!noSignalMode && uopt->enableAutoGain) {
         if (uopt->presetPreference == OutputCustomized) {
             // Loaded custom preset, we want to keep newly loaded gain. Save
             // gain written by loadPresetFromLittleFS -> writeProgramArrayNew.
@@ -3413,7 +3414,7 @@ void doPostPresetLoadSteps()
     //GBS::DAC_RGBS_PWDNZ::write(0);    // no DAC
     //GBS::SFTRST_MEM_FF_RSTZ::write(0);  // mem fifos keep in reset
 
-    if (rto->videoStandardInput == 0) {
+    if (!noSignalMode && rto->videoStandardInput == 0) {
         uint8_t videoMode = getVideoMode();
         SerialM.print(F("post preset: rto->videoStandardInput 0 > "));
         SerialM.println(videoMode);
@@ -3498,7 +3499,7 @@ void doPostPresetLoadSteps()
         GBS::OUT_SYNC_SEL::write(1); // 0_4f 1=sync from HDBypass, 2=sync from SP
         rto->autoBestHtotalEnabled = false;
     } else {
-        rto->autoBestHtotalEnabled = true;
+        rto->autoBestHtotalEnabled = !noSignalMode;
     }
 
     rto->phaseADC = GBS::PA_ADC_S::read(); // we can't know which is right, get from preset
@@ -3512,7 +3513,7 @@ void doPostPresetLoadSteps()
 
     setAndUpdateSogLevel(rto->currentLevelSOG);
 
-    if (!rto->isCustomPreset) {
+    if (!noSignalMode && !rto->isCustomPreset) {
         // Writes ADC_RGCTRL. If auto gain is enabled, ADC_RGCTRL will be
         // overwritten further down at `uopt->enableAutoGain == 1`.
         setAdcParametersGainAndOffset();
@@ -3529,8 +3530,7 @@ void doPostPresetLoadSteps()
     rto->scanlinesEnabled = false;
     rto->failRetryAttempts = 0;
     rto->videoIsFrozen = true;       // ensures unfreeze
-	// Keep polling for a real input while the synthetic no-signal output is active.
-	if (!noSignalOutputActive) {
+	if (!noSignalMode) {
 		rto->sourceDisconnected = false;
 	}
     rto->boardHasPower = true;       //same
@@ -3940,7 +3940,7 @@ void doPostPresetLoadSteps()
     GBS::VDS_SYNC_EN::write(0);
     GBS::VDS_FLOCK_EN::write(0);
 
-    if (!rto->outModeHdBypass && rto->autoBestHtotalEnabled &&
+    if (!noSignalMode && !rto->outModeHdBypass && rto->autoBestHtotalEnabled &&
         GBS::GBS_OPTION_SCALING_RGBHV::read() == 0 && !avoidAutoBest &&
         (rto->videoStandardInput >= 1 && rto->videoStandardInput <= 4)) {
         // autobesthtotal
@@ -3982,7 +3982,7 @@ void doPostPresetLoadSteps()
             }
             delay(10);
         }
-    } else {
+    } else if (!noSignalMode) {
         // scaling rgbhv, HD modes, no autobesthtotal
         delay(10);
         // works reliably now on my test HDMI dongle
@@ -4109,7 +4109,7 @@ void doPostPresetLoadSteps()
         rto->videoStandardInput = 14;
     }
 
-    if (GBS::GBS_OPTION_SCALING_RGBHV::read() == 0) {
+    if (!noSignalMode && GBS::GBS_OPTION_SCALING_RGBHV::read() == 0) {
         unsigned long timeout = millis();
         while ((!getStatus16SpHsStable()) && (millis() - timeout < 2002)) {
             delay(4);
@@ -4135,18 +4135,20 @@ void doPostPresetLoadSteps()
         }
     }
 
-    // early attempt
-    updateClampPosition();
-    if (rto->clampPositionIsSet) {
-        if (GBS::SP_NO_CLAMP_REG::read() == 1) {
+    if (!noSignalMode) {
+        // early attempt
+        updateClampPosition();
+        if (rto->clampPositionIsSet) {
+            if (GBS::SP_NO_CLAMP_REG::read() == 1) {
+                GBS::SP_NO_CLAMP_REG::write(0);
+            }
+        }
+
+        updateSpDynamic(0);
+
+        if (!rto->syncWatcherEnabled) {
             GBS::SP_NO_CLAMP_REG::write(0);
         }
-    }
-
-    updateSpDynamic(0);
-
-    if (!rto->syncWatcherEnabled) {
-        GBS::SP_NO_CLAMP_REG::write(0);
     }
 
     // this was used with ADC write enable, producing about (exactly?) 4 lock positions
@@ -4162,7 +4164,13 @@ void doPostPresetLoadSteps()
     GBS::INTERRUPT_CONTROL_00::write(0xff); // reset irq status
     GBS::INTERRUPT_CONTROL_00::write(0x00);
 
-    OutputComponentOrVGA();
+    if (noSignalMode) {
+		GBS::VDS_SYNC_LEV::write(0);
+		GBS::VDS_CONVT_BYPS::write(0);
+		GBS::OUT_SYNC_CNTRL::write(1);
+	} else {
+		OutputComponentOrVGA();
+	}
 
     // presetPreference 10 means the user prefers bypass mode at startup
     // it's best to run a normal format detect > apply preset loop, then enter bypass mode
@@ -4170,7 +4178,9 @@ void doPostPresetLoadSteps()
     // are introduced to break out of it.
     // also need to check for mode 15
     // also make sure to turn off autoBestHtotal
-    if (uopt->presetPreference == 10 && rto->videoStandardInput != 15) {
+    if (noSignalMode) {
+		rto->applyPresetDoneStage = 0;
+	} else if (uopt->presetPreference == 10 && rto->videoStandardInput != 15) {
         rto->autoBestHtotalEnabled = 0;
         if (rto->applyPresetDoneStage == 11) {
             // we were here before, stop the loop
@@ -4185,21 +4195,28 @@ void doPostPresetLoadSteps()
 
     unfreezeVideo();
 
-    if (uopt->enableFrameTimeLock) {
+    if (!noSignalMode && uopt->enableFrameTimeLock) {
         activeFrameTimeLockInitialSteps();
     }
 
     // Pro: Apply ADV7280 settings (brightness, contrast, saturation, smooth, I2P)
-    ADV_applySlotSettings();
+    if (!noSignalMode) {
+		ADV_applySlotSettings();
 
-    // Pro: Apply Developer menu and Screen per-slot overrides (if any)
-    applyDevOverrides();
+        // Pro: Apply Developer menu and Screen per-slot overrides (if any)
+		applyDevOverrides();
 
-    // Pro: Apply GBS color balance
-    applyRGBtoYUVConversion();
+        // Pro: Apply GBS color balance
+		applyRGBtoYUVConversion();
 
-    // HDMI Limited Range (must be after applyRGBtoYUVConversion)
-    applyHdmiLimitedRange();
+        // HDMI Limited Range (must be after applyRGBtoYUVConversion)
+		applyHdmiLimitedRange();
+	}
+
+	if (noSignalMode) {
+		SerialM.println(F("No-signal output ready"));
+		return;
+	}
 
     SerialM.print(F("\npreset applied: "));
     if (rto->presetID == 0x01 || rto->presetID == 0x11)
@@ -4265,6 +4282,16 @@ void doPostPresetLoadSteps()
     }
     // presetPreference = OutputCustomized may fail to load (missing) preset file and arrive here with defaults
     SerialM.println("\n");
+}
+
+void doPostPresetLoadSteps()
+{
+	doPostPresetLoadStepsInternal(false);
+}
+
+void doPostNoSignalPresetLoadSteps()
+{
+	doPostPresetLoadStepsInternal(true);
 }
 
 // Initialize slots.bin file with default values
@@ -4598,6 +4625,11 @@ bool loadSlotSettings()
 // TODO replace result with VideoStandardInput enum
 void applyPresets(uint8_t result)
 {
+	if (noSignalOutputActive && rto->sourceDisconnected) {
+		SerialM.println(F("Preset change deferred until a source is detected"));
+		return;
+	}
+
     if (!rto->boardHasPower) {
         SerialM.println(F("GBS board not responding!"));
         return;
@@ -8433,22 +8465,34 @@ void handleButtons(void)
 #if USE_NEW_OLED_MENU
     OLEDMenuNav btn = OLEDMenuNav::IDLE;
     debounceButtons();
-    if (buttonDown(MENU_SHIFT))
+	bool menuPressed = buttonDown(MENU_SHIFT);
+	bool downPressed = buttonDown(DOWN_SHIFT);
+	bool upPressed = buttonDown(UP_SHIFT);
+	if (menuPressed || downPressed || upPressed) {
+		wakeNoSignalOutput();
+	}
+    if (menuPressed)
         btn = OLEDMenuNav::ENTER;
-    if (buttonDown(DOWN_SHIFT))
+    if (downPressed)
         btn = OLEDMenuNav::UP;
-    if (buttonDown(UP_SHIFT))
+    if (upPressed)
         btn = OLEDMenuNav::DOWN;
     oledMenu.tick(btn);
 #else
     debounceButtons();
-    if (buttonDown(INPUT_SHIFT))
+	bool inputPressed = buttonDown(INPUT_SHIFT);
+	bool downPressed = buttonDown(DOWN_SHIFT);
+	bool menuPressed = buttonDown(MENU_SHIFT);
+	if (inputPressed || downPressed || menuPressed) {
+		wakeNoSignalOutput();
+	}
+    if (inputPressed)
         Menu::run(MenuInput::BACK);
-    if (buttonDown(DOWN_SHIFT))
+    if (downPressed)
         Menu::run(MenuInput::DOWN);
     // if (buttonDown(UP_SHIFT))
     //     Menu::run(MenuInput::UP);
-    if (buttonDown(MENU_SHIFT))
+    if (menuPressed)
         Menu::run(MenuInput::FORWARD);
 #endif
 }
@@ -8627,6 +8671,11 @@ void loop()
 #endif
 
     uint8_t oldIsrID = rotaryIsrID;
+	static uint8_t lastRotaryActivityId = oldIsrID;
+	if (lastRotaryActivityId != oldIsrID) {
+		lastRotaryActivityId = oldIsrID;
+		wakeNoSignalOutput();
+	}
     if (NEW_OLED_MENU == true) {
         oledMenu.tick(oledNav);
         if (oldIsrID == rotaryIsrID) {
@@ -9856,6 +9905,7 @@ void loop()
 
 void handleType2Command(char argument)
 {
+	wakeNoSignalOutput();
     myLog("user", argument);
     switch (argument) {
         case '0':

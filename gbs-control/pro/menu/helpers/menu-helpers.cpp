@@ -85,7 +85,9 @@ void exitMenu()
 bool irDecode()
 {
     if (irrecv.decode(&results)) {
-        wakeNoSignalOutput();
+		if (IR_isValidMenuKey(results.value)) {
+			wakeNoSignalOutput();
+		}
         irDecodedFlag = 1;
         return true;
     }

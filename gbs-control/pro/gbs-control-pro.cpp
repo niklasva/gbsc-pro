@@ -56,7 +56,7 @@ extern void saveUserPrefs();
 extern void resetSyncProcessor();
 extern float getOutputFrameRate();
 extern void writeProgramArrayNew(const uint8_t *programArray, boolean skipMDSection);
-extern void doPostPresetLoadSteps();
+extern void doPostNoSignalPresetLoadSteps();
 extern void goLowPowerWithInputDetection();
 
 // ====================================================================================
@@ -126,8 +126,12 @@ void enterNoSignalOutput(void)
     }
 
     noSignalOutputActive = true;
+	GBS::ADC_INPUT_SEL::write(1);
+	rto->inputIsYpBpR = false;
+	rto->syncTypeCsync = false;
+	rto->presetIsPalForce60 = false;
     writeProgramArrayNew(ntsc_720x480, false);
-    doPostPresetLoadSteps();
+    doPostNoSignalPresetLoadSteps();
     GBS::VDS_DIS_HB_ST::write(0x00);
     GBS::VDS_DIS_HB_SP::write(0xffff);
     rto->isInLowPowerMode = false;
