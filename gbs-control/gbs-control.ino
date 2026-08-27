@@ -1356,6 +1356,40 @@ void prepareInputScanKeepOutput()
     LEDOFF;
 }
 
+// Which timing to bring up for the synthetic no-signal screen when the output is
+// down (cold start). With no source there is no video standard to go by, so this
+// follows the user's output preference - the same timing applyPresets() will pick
+// once a source shows up, so the sink locks once instead of renegotiating.
+// Returns NULL when we must not invent a timing:
+//   - OutputDownscale may be feeding a 15 kHz display, which a 31 kHz+ mode would
+//     drive well out of range
+//   - OutputBypass has nothing to pass through without a source
+// In those cases enterNoSignalOutput() skips the panel entirely and parks the
+// board in low power, exactly as the firmware did before the panel existed.
+const uint8_t *noSignalPreset()
+{
+    switch (uopt->presetPreference) {
+        case Output960P:
+            return ntsc_240p; // 1280x960 out
+        case Output480P:
+            return ntsc_720x480;
+        case Output720P:
+            return ntsc_1280x720;
+        case Output1024P:
+            return ntsc_1280x1024;
+        case Output1080P:
+            return ntsc_1920x1080;
+        case OutputCustomized:
+            // the user's own timing, which their display already accepts. Falls back
+            // to ntsc_240p internally if the slot has no file.
+            return loadPresetFromLittleFS(1);
+        case OutputDownscale:
+        case OutputBypass:
+        default:
+            return NULL;
+    }
+}
+
 boolean optimizePhaseSP()
 {
     uint16_t pixelClock = GBS::PLLAD_MD::read();

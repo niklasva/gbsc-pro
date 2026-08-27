@@ -24,7 +24,6 @@
 #include "../tv5725.h"
 #include "../osd.h"
 #include "../OLEDMenuImplementation.h"
-#include "../ntsc_1920x1080.h"
 #include "../src/WebSocketsServer.h"
 
 #include <IRremoteESP8266.h>
@@ -59,6 +58,7 @@ extern void saveUserPrefs();
 extern void resetSyncProcessor();
 extern float getOutputFrameRate();
 extern void writeProgramArrayNew(const uint8_t *programArray, boolean skipMDSection);
+extern const uint8_t *noSignalPreset();
 extern void doPostNoSignalPresetLoadSteps();
 extern void goLowPowerWithInputDetection();
 extern void prepareSyncProcessor();
@@ -234,9 +234,9 @@ void enterNoSignalOutput(void)
 
     noSignalOutputActive = true;
     noSignalPanelVisible = false;
-    rto->isInLowPowerMode = false;
 
     if (outputPathIsLive()) {
+        rto->isInLowPowerMode = false;
         // Reuse the timing that is already driving the sink. No preset reload, no mode
         // change, no HDMI renegotiation - the TV never sees the output go away.
         // Hold the last frame for a moment before blanking to the panel: a source that
@@ -250,10 +250,22 @@ void enterNoSignalOutput(void)
         // Nothing on the output yet (cold start, or the board just came back up).
         // Bring up the fallback timing once. There is no last frame worth holding
         // here, so the panel goes up straight away.
+        const uint8_t *preset = noSignalPreset();
+        if (preset == NULL) {
+            // downscale / bypass: no timing we can be sure the display tolerates,
+            // so skip the panel and park the board the way stock firmware does
+            noSignalOutputActive = false;
+            noSignalOutputKeptPreset = false;
+            if (!rto->isInLowPowerMode) {
+                goLowPowerWithInputDetection();
+            }
+            return;
+        }
+        rto->isInLowPowerMode = false;
         noSignalOutputKeptPreset = false;
         rto->syncTypeCsync = false;
         rto->presetIsPalForce60 = false;
-        writeProgramArrayNew(ntsc_1920x1080, false);
+        writeProgramArrayNew(preset, false);
         doPostNoSignalPresetLoadSteps();
         // the preset just overwrote segment 5 with its display-side values: put the
         // user's real input back and restore the scan-tuned sync processor settings
