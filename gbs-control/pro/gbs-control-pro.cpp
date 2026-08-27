@@ -31,6 +31,9 @@
 #include <IRutils.h>
 #include <SSD1306Wire.h>
 
+#include <stdio.h>
+#include <string.h>
+
 #include "drivers/ir_remote.h"
 #include "drivers/stv9426.h"
 #include "drivers/pt2257.h"
@@ -109,6 +112,46 @@ static bool noSignalOutputKeptPreset = false;
 static uint16_t noSignalBlankStartBackup = 0;
 static uint16_t noSignalBlankStopBackup = 0;
 
+// The panel does not appear the instant sync drops: the last frame is held for a
+// moment first, so a source briefly changing mode never flashes NO SIGNAL at all.
+static const unsigned long kNoSignalPanelDelayMs = 2500;
+static bool noSignalPanelVisible = false;
+static unsigned long noSignalPanelDueTime = 0;
+
+// Status line animation on the panel's bottom row
+static const unsigned long kNoSignalStatusIntervalMs = 700; // dot step / repaint tick
+static const unsigned long kNoSignalHintSlotMs = 4000;      // 8s scanning, then 4s of the hint
+static const uint8_t kNoSignalCols = 28;
+static unsigned long lastNoSignalStatusTime = 0;
+static char noSignalStatusShown[kNoSignalCols + 1] = {0};
+
+static const char *activeInputShortName(void)
+{
+    switch (uopt->activeInputType) {
+        case InputTypeRGBs: return "RGBS";
+        case InputTypeRGsB: return "RGSB";
+        case InputTypeVGA:  return "VGA";
+        case InputTypeYUV:  return "COMPONENT";
+        case InputTypeSV:   return "S-VIDEO";
+        case InputTypeAV:   return "COMPOSITE";
+        default:            return "INPUT";
+    }
+}
+
+// Paint one full 28 column row, text centred, padding drawn in the panel colour
+static void writeCenteredRow(uint8_t row, const char *text, uint8_t color)
+{
+    char line[kNoSignalCols + 1];
+    uint8_t len = strlen(text);
+    if (len > kNoSignalCols) {
+        len = kNoSignalCols;
+    }
+    memset(line, ' ', kNoSignalCols);
+    memcpy(line + ((kNoSignalCols - len) / 2), text, len);
+    line[kNoSignalCols] = '\0';
+    OSD_writeStringAtRow(row, 0, line, color);
+}
+
 // Is the display path still running? Display clock present and VDS out of reset.
 // Deliberately does not look at OUT_SYNC_CNTRL, which is legitimately 0 for component out.
 static bool outputPathIsLive(void)
@@ -116,21 +159,70 @@ static bool outputPathIsLive(void)
     return GBS::PLL648_CONTROL_01::read() != 0x00 && GBS::SFTRST_VDS_RSTZ::read() == 1;
 }
 
+// Bottom row: mostly "SCANNING <input> ..." so a long detect looks busy rather than
+// wedged, with the MENU hint cycling in so it stays discoverable.
+static void buildNoSignalStatus(char *out, size_t outLen)
+{
+    if (((millis() / kNoSignalHintSlotMs) % 3) == 2) {
+        snprintf(out, outLen, "PRESS MENU");
+        return;
+    }
+
+    const uint8_t dots = (millis() / kNoSignalStatusIntervalMs) % 4;
+    snprintf(out, outLen, "SCANNING %s%.*s", activeInputShortName(), dots, "...");
+}
+
 void showNoSignalOutput(void)
 {
-    if (!noSignalOutputActive || oled_menuItem != OLED_None) {
+    if (!noSignalOutputActive || !noSignalPanelVisible || oled_menuItem != OLED_None) {
         return;
     }
 
     const uint8_t panelColor = OSD_COLOR(OSD_FG_WHITE, OSD_BG_BLUE);
-    const char panelRow[] = "                            ";
-    OSD_writeStringAtRow(1, 0, panelRow, panelColor);
-    OSD_writeStringAtRow(2, 0, panelRow, panelColor);
-    OSD_writeStringAtRow(3, 0, panelRow, panelColor);
-    OSD_writeStringAtRow(1, 10, "GBSC-PRO", panelColor);
-    OSD_writeStringAtRow(2, 9, "NO SIGNAL", panelColor);
-    OSD_writeStringAtRow(3, 9, "PRESS MENU", panelColor);
+    char status[kNoSignalCols + 1];
+    buildNoSignalStatus(status, sizeof(status));
+
+    writeCenteredRow(1, "GBSC-PRO", panelColor);
+    writeCenteredRow(2, "NO SIGNAL", panelColor);
+    writeCenteredRow(3, status, panelColor);
+    strncpy(noSignalStatusShown, status, sizeof(noSignalStatusShown) - 1);
+    noSignalStatusShown[sizeof(noSignalStatusShown) - 1] = '\0';
+    lastNoSignalStatusTime = millis();
     OSD_displayOn();
+}
+
+// Repaint just the bottom row when its text actually changed, so the animation
+// costs one row of I2C rather than the whole panel.
+static void refreshNoSignalStatus(void)
+{
+    if (!noSignalOutputActive || !noSignalPanelVisible || oled_menuItem != OLED_None) {
+        return;
+    }
+    if (millis() - lastNoSignalStatusTime < kNoSignalStatusIntervalMs) {
+        return;
+    }
+    lastNoSignalStatusTime = millis();
+
+    char status[kNoSignalCols + 1];
+    buildNoSignalStatus(status, sizeof(status));
+    if (strcmp(status, noSignalStatusShown) == 0) {
+        return;
+    }
+
+    writeCenteredRow(3, status, OSD_COLOR(OSD_FG_WHITE, OSD_BG_BLUE));
+    strncpy(noSignalStatusShown, status, sizeof(noSignalStatusShown) - 1);
+    noSignalStatusShown[sizeof(noSignalStatusShown) - 1] = '\0';
+}
+
+// Blank the picture and bring the panel up. Split out from enterNoSignalOutput()
+// so the grace period can delay it.
+static void revealNoSignalPanel(void)
+{
+    noSignalPanelVisible = true;
+    noSignalStatusShown[0] = '\0';
+    GBS::VDS_DIS_HB_ST::write(0x00);
+    GBS::VDS_DIS_HB_SP::write(0xffff);
+    showNoSignalOutput();
 }
 
 void enterNoSignalOutput(void)
@@ -141,18 +233,23 @@ void enterNoSignalOutput(void)
     }
 
     noSignalOutputActive = true;
+    noSignalPanelVisible = false;
     rto->isInLowPowerMode = false;
 
     if (outputPathIsLive()) {
         // Reuse the timing that is already driving the sink. No preset reload, no mode
         // change, no HDMI renegotiation - the TV never sees the output go away.
+        // Hold the last frame for a moment before blanking to the panel: a source that
+        // is only changing mode comes back before anyone sees a NO SIGNAL.
         noSignalOutputKeptPreset = true;
         noSignalBlankStartBackup = GBS::VDS_DIS_HB_ST::read();
         noSignalBlankStopBackup = GBS::VDS_DIS_HB_SP::read();
         freezeVideo();
+        noSignalPanelDueTime = millis() + kNoSignalPanelDelayMs;
     } else {
         // Nothing on the output yet (cold start, or the board just came back up).
-        // Bring up the fallback timing once.
+        // Bring up the fallback timing once. There is no last frame worth holding
+        // here, so the panel goes up straight away.
         noSignalOutputKeptPreset = false;
         rto->syncTypeCsync = false;
         rto->presetIsPalForce60 = false;
@@ -162,12 +259,8 @@ void enterNoSignalOutput(void)
         // user's real input back and restore the scan-tuned sync processor settings
         applySavedInputSource();
         prepareSyncProcessor();
+        revealNoSignalPanel();
     }
-
-    // blank the picture, leave the OSD overlay on top of it
-    GBS::VDS_DIS_HB_ST::write(0x00);
-    GBS::VDS_DIS_HB_SP::write(0xffff);
-    showNoSignalOutput();
 }
 
 void leaveNoSignalOutput(void)
@@ -177,7 +270,7 @@ void leaveNoSignalOutput(void)
     }
 
     noSignalOutputActive = false;
-    if (oled_menuItem == OLED_None) {
+    if (noSignalPanelVisible && oled_menuItem == OLED_None) {
         OSD_displayOff();
     }
 
@@ -188,19 +281,41 @@ void leaveNoSignalOutput(void)
         unfreezeVideo();
     }
     noSignalOutputKeptPreset = false;
+    noSignalPanelVisible = false;
+    noSignalStatusShown[0] = '\0';
 }
 
 void updateNoSignalOutput(void)
 {
-    if (noSignalOutputActive && rto->boardHasPower && millis() - lastNoSignalActivityTime >= kNoSignalSleepTimeoutMs) {
-        goLowPowerWithInputDetection();
+    if (!noSignalOutputActive || !rto->boardHasPower) {
+        return;
     }
+
+    if (millis() - lastNoSignalActivityTime >= kNoSignalSleepTimeoutMs) {
+        goLowPowerWithInputDetection();
+        return;
+    }
+
+    if (!noSignalPanelVisible) {
+        // still inside the grace period, holding the last frame
+        if ((long)(millis() - noSignalPanelDueTime) >= 0) {
+            revealNoSignalPanel();
+        }
+        return;
+    }
+
+    refreshNoSignalStatus();
 }
 
 void wakeNoSignalOutput(void)
 {
     if (rto->sourceDisconnected && rto->boardHasPower) {
         enterNoSignalOutput();
+        // someone reached for a button: skip the rest of the grace period, they are
+        // asking to be told what is going on
+        if (noSignalOutputActive && !noSignalPanelVisible) {
+            revealNoSignalPanel();
+        }
     }
 }
 
