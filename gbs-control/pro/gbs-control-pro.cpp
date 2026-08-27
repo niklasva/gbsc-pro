@@ -58,6 +58,9 @@ extern float getOutputFrameRate();
 extern void writeProgramArrayNew(const uint8_t *programArray, boolean skipMDSection);
 extern void doPostNoSignalPresetLoadSteps();
 extern void goLowPowerWithInputDetection();
+extern void prepareSyncProcessor();
+extern void freezeVideo();
+extern void unfreezeVideo();
 
 // ====================================================================================
 // Global Variables - IR Remote
@@ -100,6 +103,18 @@ uint16_t horizontalBlankStop = 0;
 bool noSignalOutputActive = false;
 static const unsigned long kNoSignalSleepTimeoutMs = 10UL * 60UL * 1000UL;
 static unsigned long lastNoSignalActivityTime = 0;
+// true = we are riding on the preset that was already driving the sink (no mode change),
+// false = we had to bring up the fallback timing ourselves (cold start / output was down)
+static bool noSignalOutputKeptPreset = false;
+static uint16_t noSignalBlankStartBackup = 0;
+static uint16_t noSignalBlankStopBackup = 0;
+
+// Is the display path still running? Display clock present and VDS out of reset.
+// Deliberately does not look at OUT_SYNC_CNTRL, which is legitimately 0 for component out.
+static bool outputPathIsLive(void)
+{
+    return GBS::PLL648_CONTROL_01::read() != 0x00 && GBS::SFTRST_VDS_RSTZ::read() == 1;
+}
 
 void showNoSignalOutput(void)
 {
@@ -126,15 +141,32 @@ void enterNoSignalOutput(void)
     }
 
     noSignalOutputActive = true;
-	GBS::ADC_INPUT_SEL::write(1);
-	rto->inputIsYpBpR = false;
-	rto->syncTypeCsync = false;
-	rto->presetIsPalForce60 = false;
-    writeProgramArrayNew(ntsc_1920x1080, false);
-    doPostNoSignalPresetLoadSteps();
+    rto->isInLowPowerMode = false;
+
+    if (outputPathIsLive()) {
+        // Reuse the timing that is already driving the sink. No preset reload, no mode
+        // change, no HDMI renegotiation - the TV never sees the output go away.
+        noSignalOutputKeptPreset = true;
+        noSignalBlankStartBackup = GBS::VDS_DIS_HB_ST::read();
+        noSignalBlankStopBackup = GBS::VDS_DIS_HB_SP::read();
+        freezeVideo();
+    } else {
+        // Nothing on the output yet (cold start, or the board just came back up).
+        // Bring up the fallback timing once.
+        noSignalOutputKeptPreset = false;
+        rto->syncTypeCsync = false;
+        rto->presetIsPalForce60 = false;
+        writeProgramArrayNew(ntsc_1920x1080, false);
+        doPostNoSignalPresetLoadSteps();
+        // the preset just overwrote segment 5 with its display-side values: put the
+        // user's real input back and restore the scan-tuned sync processor settings
+        applySavedInputSource();
+        prepareSyncProcessor();
+    }
+
+    // blank the picture, leave the OSD overlay on top of it
     GBS::VDS_DIS_HB_ST::write(0x00);
     GBS::VDS_DIS_HB_SP::write(0xffff);
-    rto->isInLowPowerMode = false;
     showNoSignalOutput();
 }
 
@@ -148,6 +180,14 @@ void leaveNoSignalOutput(void)
     if (oled_menuItem == OLED_None) {
         OSD_displayOff();
     }
+
+    if (noSignalOutputKeptPreset) {
+        // hand the preset back the way we found it; applyPresets() takes it from here
+        GBS::VDS_DIS_HB_ST::write(noSignalBlankStartBackup);
+        GBS::VDS_DIS_HB_SP::write(noSignalBlankStopBackup);
+        unfreezeVideo();
+    }
+    noSignalOutputKeptPreset = false;
 }
 
 void updateNoSignalOutput(void)

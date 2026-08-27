@@ -795,15 +795,20 @@ static inline void setScreenVMoveSp(uint16_t v) { if (isPalGroup()) uopt->screen
 static inline void setScreenHScale(uint16_t v)  { if (isPalGroup()) uopt->screenHScale_pal  = v; else uopt->screenHScale_ntsc  = v; }
 static inline void setScreenVScale(uint16_t v)  { if (isPalGroup()) uopt->screenVScale_pal  = v; else uopt->screenVScale_ntsc  = v; }
 
-void setResetParameters()
+// keepOutputAlive: reset the input side (ADC / SP / MD / PLLAD) only, and leave the
+// display path (PLL648, VDS, memory clock, sync out pads) exactly as it is. Used while
+// the synthetic no-signal screen is on air, so the HDMI sink never loses its lock.
+void setResetParametersEx(bool keepOutputAlive)
 {
     SerialM.println("<reset>");
     rto->videoStandardInput = 0;
     rto->videoIsFrozen = false;
-    if (noSignalOutputActive) {
-        OSD_displayOff();
+    if (!keepOutputAlive) {
+        if (noSignalOutputActive) {
+            OSD_displayOff();
+        }
+        noSignalOutputActive = false;
     }
-    noSignalOutputActive = false;
     rto->applyPresetDoneStage = 0;
     rto->presetVlineShift = 0;
     rto->sourceDisconnected = true;
@@ -851,8 +856,10 @@ void setResetParameters()
     // could stop ext clock gen output here?
     FrameSync::cleanup();
 
-    GBS::OUT_SYNC_CNTRL::write(0);    // no H / V sync out to PAD
-    GBS::DAC_RGBS_PWDNZ::write(0);    // disable DAC
+    if (!keepOutputAlive) {
+        GBS::OUT_SYNC_CNTRL::write(0); // no H / V sync out to PAD
+        GBS::DAC_RGBS_PWDNZ::write(0); // disable DAC
+    }
     GBS::ADC_TA_05_CTRL::write(0x02); // 5_05 1 // minor SOG clamp effect
     GBS::ADC_TEST_04::write(0x02);    // 5_04
     GBS::ADC_TEST_0C::write(0x12);    // 5_0c 1 4
@@ -862,21 +869,31 @@ void setResetParameters()
     GBS::ADC_INPUT_SEL::write(1); // 1 = RGBS / RGBHV adc data input
     GBS::ADC_POWDZ::write(1);     // ADC on
     setAndUpdateSogLevel(rto->currentLevelSOG);
-    GBS::RESET_CONTROL_0x46::write(0x00); // all units off
-    GBS::RESET_CONTROL_0x47::write(0x00);
-    GBS::GPIO_CONTROL_00::write(0x67);     // most GPIO pins regular GPIO
-    GBS::GPIO_CONTROL_01::write(0x00);     // all GPIO outputs disabled
-    GBS::DAC_RGBS_PWDNZ::write(0);         // disable DAC (output)
-    GBS::PLL648_CONTROL_01::write(0x00);   // VCLK(1/2/4) display clock // needs valid for debug bus
-    GBS::PAD_CKIN_ENZ::write(0);           // 0 = clock input enable (pin40)
-    GBS::PAD_CKOUT_ENZ::write(1);          // clock output disable
+    if (!keepOutputAlive) {
+        GBS::RESET_CONTROL_0x46::write(0x00); // all units off
+        GBS::RESET_CONTROL_0x47::write(0x00);
+    }
+    GBS::GPIO_CONTROL_00::write(0x67); // most GPIO pins regular GPIO
+    GBS::GPIO_CONTROL_01::write(0x00); // all GPIO outputs disabled
+    if (!keepOutputAlive) {
+        GBS::DAC_RGBS_PWDNZ::write(0);       // disable DAC (output)
+        GBS::PLL648_CONTROL_01::write(0x00); // VCLK(1/2/4) display clock // needs valid for debug bus
+    }
+    GBS::PAD_CKIN_ENZ::write(0); // 0 = clock input enable (pin40)
+    if (!keepOutputAlive) {
+        GBS::PAD_CKOUT_ENZ::write(1); // clock output disable
+    }
     GBS::IF_SEL_ADC_SYNC::write(1);        // ! 1_28 2
     GBS::PLLAD_VCORST::write(1);           // reset = 1
     GBS::PLL_ADS::write(1);                // When = 1, input clock is from ADC ( otherwise, from unconnected clock at pin 40 )
-    GBS::PLL_CKIS::write(0);               // PLL use OSC clock
-    GBS::PLL_MS::write(2);                 // fb memory clock can go lower power
+    if (!keepOutputAlive) {
+        GBS::PLL_CKIS::write(0); // PLL use OSC clock
+        GBS::PLL_MS::write(2);   // fb memory clock can go lower power
+    }
     GBS::PAD_CONTROL_00_0x48::write(0x2b); //disable digital inputs, enable debug out pin
-    GBS::PAD_CONTROL_01_0x49::write(0x1f); //pad control pull down/up transistors on
+    if (!keepOutputAlive) {
+        GBS::PAD_CONTROL_01_0x49::write(0x1f); //pad control pull down/up transistors on
+    }
     loadHdBypassSection();                 // 1_30 to 1_55
     loadPresetMdSection();                 // 1_60 to 1_83
     setAdcParametersGainAndOffset();
@@ -892,15 +909,22 @@ void setResetParameters()
     GBS::PLLAD_FS::write(0);  // low gain (have to deal with cold and warm startups)
     GBS::PLLAD_5_16::write(0x1f);
     GBS::PLLAD_MD::write(0x700);
-    resetPLL(); // cycles PLL648
-    delay(2);
-    resetPLLAD();                            // same for PLLAD
-    GBS::PLL_VCORST::write(1);               // reset on
+    if (!keepOutputAlive) {
+        resetPLL(); // cycles PLL648
+        delay(2);
+    }
+    resetPLLAD(); // same for PLLAD
+    if (!keepOutputAlive) {
+        GBS::PLL_VCORST::write(1); // reset on
+    }
     GBS::PLLAD_CONTROL_00_5x11::write(0x01); // reset on
     resetDebugPort();
 
     //GBS::RESET_CONTROL_0x47::write(0x16);
-    GBS::RESET_CONTROL_0x46::write(0x41);   // new 23.07.19
+    if (!keepOutputAlive) {
+        // 0x46 holds the memory FIFO / VDS resets, cycling it would drop the picture
+        GBS::RESET_CONTROL_0x46::write(0x41); // new 23.07.19
+    }
     GBS::RESET_CONTROL_0x47::write(0x17);   // new 23.07.19 (was 0x16)
     GBS::INTERRUPT_CONTROL_01::write(0xff); // enable interrupts
     GBS::INTERRUPT_CONTROL_00::write(0xff); // reset irq status
@@ -912,6 +936,11 @@ void setResetParameters()
     rto->continousStableCounter = 0;
     serialCommand = '@';
     userCommand = '@';
+}
+
+void setResetParameters()
+{
+    setResetParametersEx(false);
 }
 
 void OutputComponentOrVGA()
@@ -1314,6 +1343,19 @@ void goLowPowerWithInputDetection()
     LEDOFF;
 }
 
+// Same as goLowPowerWithInputDetection(), but the display path keeps running so the
+// HDMI sink holds its lock while we look for a new source. Not low power - that only
+// happens once the no-signal screen times out (see updateNoSignalOutput).
+void prepareInputScanKeepOutput()
+{
+    setResetParametersEx(true);
+    prepareSyncProcessor();
+    delay(100);
+    rto->isInLowPowerMode = false;
+    SerialM.println(F("Scanning inputs for sources ..."));
+    LEDOFF;
+}
+
 boolean optimizePhaseSP()
 {
     uint16_t pixelClock = GBS::PLLAD_MD::read();
@@ -1629,6 +1671,9 @@ uint8_t detectAndSwitchToActiveInput()
                         }
 
 						rto->videoStandardInput = 15;
+						// hand the output back before applyPresets(), else leaveNoSignalOutput()
+						// would later restore this preset's blanking over the new one
+						leaveNoSignalOutput();
 						rto->sourceDisconnected = false;
 						// exception: apply preset here, not later in syncwatcher
 						applyPresets(rto->videoStandardInput);
@@ -1753,7 +1798,7 @@ uint8_t inputAndSyncDetect()
                 rto->sourceDisconnected = true;
                 rto->videoStandardInput = 0;
                 GBS::SP_SOG_MODE::write(1);
-                goLowPowerWithInputDetection();
+                prepareInputScanKeepOutput();
                 enterNoSignalOutput();
             }
         }
@@ -7393,11 +7438,12 @@ void runSyncWatcher()
 
         if (RGBHVNoSyncCounter > limitNoSync) {
             RGBHVNoSyncCounter = 0;
-            setResetParameters();
+            setResetParametersEx(true); // keep the picture path up, reset the input side only
             prepareSyncProcessor();
             resetSyncProcessor(); // todo: fix MD being stuck in last mode when sync disappears
             //resetModeDetect();
             rto->noSyncCounter = 0;
+            enterNoSignalOutput(); // was missing: output stayed dead until the next detect hit
             //Serial.println("RGBHV limit no sync");
         }
 
@@ -7547,7 +7593,7 @@ void runSyncWatcher()
         // restore initial conditions and move to input detect
         rto->noSyncCounter = 0;
         SerialM.println();
-        goLowPowerWithInputDetection();
+        prepareInputScanKeepOutput();
         enterNoSignalOutput();
     }
 }
